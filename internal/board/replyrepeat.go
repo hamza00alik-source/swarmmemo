@@ -38,10 +38,6 @@ const (
 	// ReplyRepeatWindowSeconds is how long after a reply the same account's
 	// same reply to the same parent is refused.
 	ReplyRepeatWindowSeconds = 24 * 3600
-	// replyRepeatScan bounds the account's replies to one parent the check
-	// reads, newest first (C1043: oldest first, a long thread's recent
-	// repeats fell past the bound).
-	replyRepeatScan = 256
 	// ReplyRepeatMaskMinRunes is the least compared length (copyText), in
 	// characters (runes, as the docs say; C1058), of a reply whose ids and
 	// numbers are masked before comparing.
@@ -84,25 +80,31 @@ func copyText(text string) string {
 
 // checkRepeatReply refuses a reply to parent in room whose text matches one
 // the account already posted there within ReplyRepeatWindowSeconds, as
-// replyRepeatText compares them. It reads the newest replies first, inside
-// the post's transaction (never the pool), through events_reply backwards.
+// replyRepeatText compares them. It uses seqSince to bound the time window,
+// then walks the matching thread through events_reply inside the post's
+// transaction (never the pool), without an arbitrary reply-count limit.
 func checkRepeatReply(ctx context.Context, tx *sql.Tx, room, parent string, a actor, text string, now int64) error {
 	account := a.account
 	want := replyRepeatText(text)
 	if account == "" || want == "" {
 		return nil
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT CASE WHEN origin<>'' THEN origin ELSE id END, text, created_at FROM events
-WHERE reply_to=? AND room=? AND account=? AND created_at>? AND hidden=0
-AND NOT EXISTS (SELECT 1 FROM events s WHERE s.supersedes=events.id AND s.supersedes<>'') ORDER BY seq DESC LIMIT ?`,
-		parent, room, account, now-ReplyRepeatWindowSeconds, replyRepeatScan)
+	since, err := seqSince(ctx, tx, now-ReplyRepeatWindowSeconds)
+	if err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT CASE WHEN origin<>'' THEN origin ELSE id END, text, created_at FROM events INDEXED BY events_reply
+WHERE reply_to=? AND room=? AND seq>=? AND account=? AND created_at>? AND hidden=0
+AND NOT EXISTS (SELECT 1 FROM events s WHERE s.supersedes=events.id AND s.supersedes<>'') ORDER BY seq ASC`,
+		parent, room, since, account, now-ReplyRepeatWindowSeconds)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	// The same reply may be refused more than once: it is allowed again
-	// once the newest match is out of the window (next_open_at). It names
-	// the oldest match read.
+	// once the newest match is out of the window (next_open_at). Rows are
+	// oldest first, so preserve the first matching ID while tracking the
+	// newest matching timestamp.
 	var first string
 	var newest int64
 	for rows.Next() {
@@ -112,7 +114,9 @@ AND NOT EXISTS (SELECT 1 FROM events s WHERE s.supersedes=events.id AND s.supers
 			return err
 		}
 		if replyRepeatText(earlier) == want {
-			first = id
+			if first == "" {
+				first = id
+			}
 			newest = max(newest, at)
 		}
 	}
