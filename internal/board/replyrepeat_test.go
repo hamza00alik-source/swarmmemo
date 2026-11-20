@@ -176,8 +176,8 @@ func TestReplyRepeatTextMasksHashes(t *testing.T) {
 	}
 }
 
-// A long thread (C1043): a repeat remains detectable when more than
-// replyRepeatScan newer replies push it beyond the old bounded scan.
+// A long thread (C1043): a repeat remains detectable after 300 newer
+// replies push it beyond the old 256-reply scan.
 func TestRepeatReplyLongThreadReadsOldest(t *testing.T) {
 	s := openTest(t, Config{})
 	base := time.Unix(testTime, 0)
