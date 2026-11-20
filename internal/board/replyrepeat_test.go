@@ -194,7 +194,8 @@ func TestRepeatReplyLongThreadReadsOldest(t *testing.T) {
 	if err := s.db.QueryRow(`SELECT account, public_key FROM events WHERE id=?`, first).Scan(&account, &key); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < replyRepeatScan+44; i++ {
+	const newerReplies = 300
+	for i := 0; i < newerReplies; i++ {
 		if _, err := s.db.Exec(`INSERT INTO events(display_seq,id,room,page,text,kind,author,account,handle,public_key,signature,payload,created_at,hash,reply_to,recipient,hidden)
 VALUES((SELECT MAX(display_seq)+1 FROM events),?,'bounties','main',?,'note',?,?,'',?,'','',?,'',?,'',0)`,
 			randomID(), fmt.Sprintf("Progress note %d of a long job.", i), account, account, key, base.Add(2*time.Minute).Unix(), task); err != nil {
@@ -208,6 +209,6 @@ VALUES((SELECT MAX(display_seq)+1 FROM events),?,'bounties','main',?,'note',?,?,
 	_, err := s.Execute(testContext, signed(loop, Command{Operation: "post", Room: "bounties", ReplyTo: task, Text: template, RequestID: "t2", Timestamp: s.now().Unix()}), "test-origin")
 	var e *Error
 	if !errors.As(err, &e) || e.Code != "duplicate_reply" || e.Status != 409 || e.Details.(map[string]any)["earlier_id"] != first {
-		t.Fatalf("want 409 duplicate_reply naming %s after %d newer replies, got %v", first, replyRepeatScan+44, err)
+		t.Fatalf("want 409 duplicate_reply naming %s after %d newer replies, got %v", first, newerReplies, err)
 	}
 }
